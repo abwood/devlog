@@ -1,21 +1,22 @@
 # Notes on Writing glTF PBR
 
-Over a recent holiday break, I decided to rewrite my PBR shaders to be a bit more maintainable, readable, and accurate. The previous iteration was rooted in the early days of glTF 2.0, based off the original glTF Reference Viewer ... quickly renamed to glTF Sample Viewer as it was clear that the old implementation was good but should never be considered an authoritative "reference". This rewrite was not possible without the following resources:
+These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. This rewrite was not possible without the following resources:
 
  * Appendix B of the glTF 2.0 Specification
  * glTF Sample Viewer Source
- * Enterprise PBR (cross referencing the above two links)
+ * Enterprise PBR (cross referencing the above two references)
+ * [Energy conserving IBL](https://bruop.github.io/ibl/#single_scattering_results)
 
 ## Core glTF 2.0 PBR (Metallic-Roughness)
 
 The key starting point for this glTF PBR rewrite was to begin in Appendix B of the [glTF specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation), implementing core glTF 2.0 closest to the intent of the Khronos PBR working group. Understand that this particular implementation aims to convey spirit of the material rather than promoting optimizations and PBR witchraft. Perfect for my use.
 
-Rather than recite Appendix B back here, I'll simply fill in the blanks. Here are the nuts and bolts of my approach, any bugs are my own. We'll start with how punctual lighting (spot, point, direction lights) is handled on the PBR material and then weave in IBL.
+Rather than recite Appendix B back here, I'll simply fill in the blanks. Here are the nuts and bolts of my approach, any bugs are my own. We'll start with how punctual lighting (spot, point, direction lights) is handled on the PBR material.
 
 I'll start at a high level implementation modeled after Appendix B, and drill down into each of these building blocks individually. First we'll need to calculate the specular and diffuse surface reflections, which will then be the core inputs into dielectric and metallic brdfs. The final color is selected based on the metallic value defined on the material.
 
 ```
-    float specularBrdf = specular_brdf(alphaRoughness, NdotH, NdotL, NdotV, LdotH, VdotH);
+    float specularBrdf = specular_brdf(alphaRoughness, NdotL, NdotV, NdotH, LdotH, VdotH);
     vec3 f_specular = NdotL * vec3(specularBrdf);
     vec3 f_diffuse = NdotL * diffuse_brdf(baseColor.rgb);
 
@@ -44,7 +45,7 @@ vec3 diffuse_brdf(vec3 color)
     return (1.0 / c_Pi) * color;
 }
 
-float specular_brdf(float alphaRoughness, float NdotL, float NdotV, float LdotH, float VdotH)
+float specular_brdf(float alphaRoughness, float NdotL, float NdotV, float NdotH, float LdotH, float VdotH)
 {
     float G = geometricOcclusion(alphaRoughness, NdotL, NdotV, LdotH, VdotH);
     float V = G / (4.0 * abs(NdotL) * abs(NdotV));
@@ -110,3 +111,101 @@ vec3 fresnel_mix(float ior, vec3 base, vec3 layer, float VdotH)
     return mix(base, layer, fr);
 }
 ```
+
+## Adding Image-Based Lighting
+The technique for Image-Based Lighting (IBL) is largely based off of the [SIGGRAPH 2013 course notes](https://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf) by Brian Karis at Epic Games. An approachable supplemental overview can also be found at [learnopengl.com](https://learnopengl.com/PBR/IBL/Diffuse-irradiance). There are several different alternative approaches to IBL available depending on your target hardware and runtime criteria. Emmett Lalish from Google developed a novel approach to IBL in three.js that is fast enough to be computed on the fly at runtime. Cesium.js also has an implementation that encodes the environment maps into an octahedron, which can be unrolled into a 2D texture (this technique is known as oct-encoding). Again, I just stuck with what I had originally written years ago and is well documented online. The approach I used is energy conserving thanks to the excellent summary presented by [Bruno Opsenica](https://bruop.github.io/ibl/#single_scattering_results).
+
+First I'll present how surface light contributes are calculated for both the diffuse BRDF and the specular BRDF.
+
+```
+// IBL Irradiance represents the average lighting from any direction.
+vec3 ibl_irradiance(vec3 diffuseColor, vec3 n, float roughness, float NdotV, vec3 F0, vec2 brdfLUT)
+{
+    n =  mat3(pbrInputs.environmentMapTransform) * n;
+    // You're reading this right, the prefiltered diffuse IBL component 
+    // is jammed into this miplevel intentionally. Save on samplers.
+    vec3 diffuseLight = textureLod(u_SpecularEnvSampler, n, c_MaxLod).rgb;
+
+    // The following models energy conservation for IBL
+    // see https://bruop.github.io/ibl/
+    // ss = single scattering, ms = multiple scattering
+    vec3 Fr = max(vec3(1.0 - roughness), F0) - F0;
+    vec3 k_S = F0 + Fr * pow(1.0 - NdotV, 5.0);
+    vec3 FssEss = k_S * brdfLUT.x + brdfLUT.y;
+
+    // Multiple scattering, from Fdez-Aguera
+    float Ems = (1.0 - (brdfLUT.x + brdfLUT.y));
+    vec3 F_avg = F0 + (1.0 - F0) / 21.0;
+    vec3 FmsEms = Ems * FssEss * F_avg / (1.0 - F_avg * Ems);
+    vec3 k_D = diffuseColor * (1.0 - FssEss + FmsEms);
+
+    return (FmsEms + k_D) * diffuseLight;
+}
+
+vec3 ibl_specular(float roughness, vec3 n, vec3 v, vec3 F0, vec2 brdfLUT)
+{
+    const float roughnessOneLOD = c_MaxLod - 1.0; // c_MaxLod contains the diffuseIBL
+    float lod = roughnessOneLOD * roughness * (2.0 - roughness);
+    vec3 reflection = normalize(reflect(-v, n));
+    reflection = mat3(pbrInputs.environmentMapTransform) * reflection;
+    reflection = normalize(reflection);
+    vec3 specularLight = textureLod(u_SpecularEnvSampler, reflection, lod).rgb;
+
+    // The following models energy conservation for IBL
+    // see https://bruop.github.io/ibl/
+    // ss = single scattering, ms = multiple scattering
+    vec3 Fr = max(vec3(1.0 - roughness), F0) - F0;
+    vec3 k_S = F0 + Fr * pow(1.0 - dot(n,v), 5.0);
+    vec3 FssEss = k_S * brdfLUT.x + brdfLUT.y;
+
+    return specularLight * FssEss;
+}
+```
+
+Below I show how these terms are combined with the results of punctual lighting covered earlier in this document.
+
+```
+    vec2 uv = clamp(vec2(abs(NdotV), 1.0 - perceptualRoughness), vec2(0.0, 0.0), vec2(1.0, 1.0));
+    vec2 brdfLUT = texture(u_brdfLUT, uv).rg;
+
+    float specularBrdf = specular_brdf(alphaRoughness, NdotL, NdotV, NdotH, LdotH, VdotH);
+    vec3 f_specular = NoL * vec3(specularBrdf);
+    vec3 f_diffuse = NoL * diffuse_brdf(baseColor.rgb);
+
+    vec3 iblIrradiance = ibl_irradiance(
+        diffuseColor, 
+        n, 
+        perceptualRoughness, 
+        NoV, 
+        reflectanceF0, 
+        brdfLUT);
+
+    vec3 iblSpecularColor = ibl_specular(
+        perceptualRoughness, 
+        n, 
+        v, 
+        reflectanceF0, 
+        brdfLUT);
+
+    vec3 dielectric_brdf = 
+        fresnel_mix(
+            pbrInputs.ior,
+            f_diffuse,          // base
+            f_specular,         // layer
+            VdotH);
+
+    vec3 metal_brdf = 
+        conductor_fresnel(
+            baseColor.rgb,      // f0
+            f_specular,         // bsdf
+            VdotH);
+
+    dielectric_brdf += iblIrradiance + iblSpecularColor;
+    metal_brdf += iblIrradiance + iblSpecularColor;
+    vec3 color = mix(dielectric_brdf, metal_brdf, metallic);
+```
+
+As you can see, the approach I took was to combine irradiance (average light from all directions) and specular IBL contributions with the dielectric and metallic BRDFs at the end.
+
+## Extending Metallic-Roughness for Transmission and Refractive Volumes
+
