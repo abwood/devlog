@@ -1,11 +1,6 @@
 # Notes on Writing glTF PBR
 
-These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. This rewrite was not possible without the following resources:
-
- * Appendix B of the glTF 2.0 Specification
- * glTF Sample Viewer Source
- * Enterprise PBR (cross referencing the above two references)
- * [Energy conserving IBL](https://bruop.github.io/ibl/#single_scattering_results)
+These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. Sample code is provided below in GLSL.
 
 TODO:
  * Summary of creating an offscreen scene for transmission materials
