@@ -7,6 +7,10 @@ These notes are my own personal summary on a rewrite of my PBR shaders to be a b
  * Enterprise PBR (cross referencing the above two references)
  * [Energy conserving IBL](https://bruop.github.io/ibl/#single_scattering_results)
 
+TODO:
+ [ ] Include diagrams from Appendix B and Extensions
+ [ ] Include Renderings of the materials.
+
 ## Core glTF 2.0 PBR (Metallic-Roughness)
 
 The key starting point for this glTF PBR rewrite was to begin in Appendix B of the [glTF specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation), implementing core glTF 2.0 closest to the intent of the Khronos PBR working group. Understand that this particular implementation aims to convey spirit of the material rather than promoting optimizations and PBR witchraft. Perfect for my use.
@@ -207,5 +211,106 @@ Below I show how these terms are combined with the results of punctual lighting 
 
 As you can see, the approach I took was to combine irradiance (average light from all directions) and specular IBL contributions with the dielectric and metallic BRDFs at the end.
 
-## Extending Metallic-Roughness for Transmission and Refractive Volumes
+## Extending Metallic-Roughness for Transmission
 
+For modeling glass like surfaces, we need to extend the core metallic roughness model to include transmission. The [KHR_materials_transmission](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_transmission) extension allows for light to transmit through the surface. That might sound like alpha blending to some, but these two concepts are very different. In short, alpha blending is used to model the precense or absence of the material (think screen door). 50% alpha implies that only 50% of the material is actually there in the fragment. If that surface was shiny, you would only render 50% of that shiny surface and lose half of the highlight. For transmission, the entire material is present but we now signal to the renderer that light travels through the surface and we must therefore combine surface highlights, tint, etc on this material with the scene that exists behind this fragment. This is covered in our [Khronos webinar](https://www.khronos.org/events/advanced-pbr-material-parameters-in-gltf) and in the specification.
+
+### Preparing the offscreen opaque scene for Transmission
+
+TODO. See the second half of our [Khronos webinar](https://www.khronos.org/events/advanced-pbr-material-parameters-in-gltf) for the overview.
+
+### Shader updates for transmission.
+
+We'll start by defining our transmission response with punctual lighting. Transmission extends the core glTF model by inserting a new node, the `specular_btdf` (Bi-directional Transmission Function). At its core, the glTF model will provide a `transmissionFactor` that we will use to blend between the `diffuse_brdf` and the `specular_btdf`.
+
+```
+float heaviside(float v)
+{
+    // return 1.0 if v is > 0, 0.0 otherwise
+    return clamp(sign(v), 0.0, 1.0);
+}
+
+float specular_btdf(float alphaRoughness, vec3 n, vec3 l, vec3 v, float ior)
+{
+    l = l + 2.0 * n * (dot(-l, n)); // mirror light reflection vector on surface
+    vec3 Ht = normalize(v + l);
+
+    float D_heaviside = heaviside(clampdot(n,Ht));
+    float G_heaviside = heaviside(clampdot(Ht,v) / clampdot2(n,v));
+    
+    float Dt = D_heaviside * microfacetDistribution(alphaRoughness, clampdot(n,Ht));
+    float Gt = G_heaviside * geometricOcclusion(alphaRoughness, clampdot(n,l), clampdot(n,v), clampdot(l,Ht), clampdot(v,Ht));
+
+    float Vt = Gt / (4.0 * abs(dot(n,l)) * abs(dot(n,v))); 
+
+    return clampdot(n, l) * Vt * Dt;
+}
+```
+
+The specular_btdf should look very familiar, this is essentially the specular_brdf function, but we've modified it to be calculated with the light vector mirrored on the surface, and flipped our hemisphere of acceptable values (via the `heaviside`). The `microfacetDistribution` and `geometricOcclusion` are the same functions defined above. You may be tempted to simplify things and send different inputs into the specular_brdf function, but that unused `float ior` input is foreshadowing for changes that we will make to extend this effect to include refraction. 
+
+To factor the `specular_btdf` into our material, we will need to mix the resulting value with the `diffuse_brdf`.
+
+```
+    float transmissionFactor = pbrInputs.transmissionFactor;
+    transmissionFactor *= texture(u_TransmissionSampler, texCoords).r;
+    vec3 f_transmission = specular_btdf(alphaRoughness, n, l, v, pbrInputs.ior) * baseColor.rgb;
+    f_diffuse = mix(f_diffuse, f_transmission, transmissionFactor);
+```
+
+
+No surprises here. In my implementation, I will bind a 1x1 white texture to the u_TransmissionSampler descriptor set if there is no transmission texture available. This is merely to reduce the number of shader permutations required. For transmission surfaces, we also require a slightly modified `fresnel_mix` to use the modified half-vector.
+
+```
+    vec3 fresnel_mix(float ior, vec3 base, vec3 layer, vec3 n, vec3 l, vec3 v)
+    {
+        l = l + 2.0 * n * (dot(-l, n)); // mirror light reflection vector on surface
+        vec3 Ht = normalize(v + l);
+
+        float f0 = ((1.0 - ior) / (1.0 + ior)) * ((1.0 - ior) / (1.0 + ior));
+
+        float invVoH = 1.0 - abs(clampdot(v, Ht));
+        float pow5 = invVoH * invVoH * invVoH * invVoH * invVoH;
+        float fr = f0 + (1.0 - f0) * pow5;
+
+        return mix(base, layer, fr);
+    }
+```
+
+At a minimum, rasterizers like this implementation must "reveal" the opaque scene through a transmission surface. More advanced renders may take this requirement further by rendering layers upon layers of transmission materials to allow for stacking of the effect, though it is really hard to get this right. It turns out that modeling a mug of beer is really hard!. 
+
+Below is how I sample into the offscreen scene of opaque objects. This scene includes the Skybox and all solid objects, rendered to a 1024x1024 UNORM texture. Emphasis added to the UNORM, as this buffer isn't here to represent colors, but linear light values from this scene. As this scene is a mipmapped texture, each level in the mipmap tree contains a lower resolution and blurrier scene from the level above. As roughness increases, we want to sample into these lower levels. Note that this LOD selection is also influenced by the IOR of the material to retain two key properties; (1) as IOR approaches 1.0 sensitivity to roughness matters less (1.0 is air and we will always sample miplevel 0), and (2) a default IOR of 1.5 represents our identity value for IOR influence (no skew).
+
+```
+vec3 ibl_transmission(float roughness, float ior, vec3 absorptionColor, vec3 v, vec3 n)
+{
+    const float maxLod = 6; // scene is now always 1024x1024 with mipLevels = 10
+    const float roughnessOneLOD = maxLod - 1.0;
+    // maps 1.0 ior to LOD 0, and 1.5 ior (default) to put IOR influence at 1.0
+    const float iorLODInfluence = (ior - 1.0) * 2.0;
+    float lod = iorLODInfluence * roughnessOneLOD * roughness * (2.0 - roughness);
+    vec2 uv = gl_FragCoord.xy / scene.viewport.zw;
+
+    vec3 transmittedLight = textureLod(u_TransmissionScene, uv, lod).rgb;
+    vec3 transmittanceColor = transmittedLight * absorptionColor;
+    return transmittanceColor;
+}
+```
+
+I understand that calling this function "ibl" is a stretch, as it has nothing to do with our IBL cubemap. We are sampling an image for lighting though, so it stays. You'll see below that it just fits in nicely with our other IBL sampling. Note that as covered above for the punctual lighting case, iblTransmission is not a component of the metal_brdf.
+
+```
+    vec3 iblTransmission = transmissionFactor * ibl_transmission(
+        perceptualRoughness, 
+        pbrInputs.ior, 
+        baseColor.rgb, 
+        v,
+        n);
+
+    vec3 dielectricIblColor = mix(iblIrradiance, iblTransmission, transmissionFactor);
+    dielectric_brdf += dielectricIblColor + iblSpecularColor;
+    metal_brdf += iblIrradiance + iblSpecularColor;
+    vec3 color = mix(dielectric_brdf, metal_brdf, metallic);
+```
+
+## Extending Transmission to include Refractive Volumes
