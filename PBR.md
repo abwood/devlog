@@ -8,8 +8,10 @@ These notes are my own personal summary on a rewrite of my PBR shaders to be a b
  * [Energy conserving IBL](https://bruop.github.io/ibl/#single_scattering_results)
 
 TODO:
- [] Include diagrams from Appendix B and Extensions
- [] Include Renderings of the materials.
+ * Summary of creating an offscreen scene for transmission materials
+ * Extending thin-walled transmission to handle refractive volumes
+ * Include diagrams from Appendix B and Extensions
+ * Include Renderings of the materials.
 
 ## Core glTF 2.0 PBR (Metallic-Roughness)
 
