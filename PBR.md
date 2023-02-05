@@ -16,7 +16,7 @@ Rather than recite Appendix B back here, I'll simply fill in the blanks. Here ar
 
 I'll start at a high level implementation modeled after Appendix B, and drill down into each of these building blocks individually. First we'll need to calculate the specular and diffuse surface reflections, which will then be the core inputs into dielectric and metallic brdfs. The final color is selected based on the metallic value defined on the material.
 
-```
+```GLSL
     float specularBrdf = specular_brdf(alphaRoughness, NdotL, NdotV, NdotH, LdotH, VdotH);
     vec3 f_specular = NdotL * vec3(specularBrdf);
     vec3 f_diffuse = NdotL * diffuse_brdf(baseColor.rgb);
@@ -40,7 +40,7 @@ I'll start at a high level implementation modeled after Appendix B, and drill do
 Note the addition of NdotL factor to f_specular and f_diffuse above, which ensures that these terms are only visible on the surfaces that face the light source. Special care must be taken to ensure that these dot products are clamped to 0.0, or sometimes to a small 0.0001 for cases when the dot product is used in the denominator.
 
 Diffuse and specular brdfs follow exactly as defined in Appendix B.
-```
+```GLSL
 vec3 diffuse_brdf(vec3 color)
 {
     return (1.0 / c_Pi) * color;
@@ -58,7 +58,7 @@ float specular_brdf(float alphaRoughness, float NdotL, float NdotV, float NdotH,
 
 The geometricOcclusion (G) and microfacetDistribution (D) functions are defined in the SIGGRAPH 2013 course notes on PBR by Epic Games.
 
-```
+```GLSL
 // The following equation(s) model the distribution of microfacet normals across the area being drawn (aka D())
 // Implementation from "Average Irregularity Representation of a Roughened Surface for Ray Reflection" by T. S. Trowbridge, and K. P. Reitz
 // Follows the distribution function recommended in the SIGGRAPH 2013 course notes from EPIC Games [1], Equation 3.
@@ -92,7 +92,7 @@ float geometricOcclusion(float alphaRoughness, float NdotL, float NdotV, float L
 
 Finally, here are my implementations of `conductor_fresnel` and `fresnel_mix`:
 
-```
+```GLSL
 vec3 conductor_fresnel(vec3 f0, vec3 bsdf, float VdotH)
 {
     vec3 f90 = vec3(1.0);
@@ -118,7 +118,7 @@ The technique for Image-Based Lighting (IBL) is largely based off of the [SIGGRA
 
 First I'll present how surface light contributes are calculated for both the diffuse BRDF and the specular BRDF.
 
-```
+```GLSL
 // IBL Irradiance represents the average lighting from any direction.
 vec3 ibl_irradiance(vec3 diffuseColor, vec3 n, float roughness, float NdotV, vec3 F0, vec2 brdfLUT)
 {
@@ -165,7 +165,7 @@ vec3 ibl_specular(float roughness, vec3 n, vec3 v, vec3 F0, vec2 brdfLUT)
 
 Below I show how these terms are combined with the results of punctual lighting covered earlier in this document.
 
-```
+```GLSL
     vec2 uv = clamp(vec2(abs(NdotV), 1.0 - perceptualRoughness), vec2(0.0, 0.0), vec2(1.0, 1.0));
     vec2 brdfLUT = texture(u_brdfLUT, uv).rg;
 
@@ -220,7 +220,7 @@ TODO. See the second half of our [Khronos webinar](https://www.khronos.org/event
 
 We'll start by defining our transmission response with punctual lighting. Transmission extends the core glTF model by inserting a new node, the `specular_btdf` (Bi-directional Transmission Function). At its core, the glTF model will provide a `transmissionFactor` that we will use to blend between the `diffuse_brdf` and the `specular_btdf`.
 
-```
+```GLSL
 float heaviside(float v)
 {
     // return 1.0 if v is > 0, 0.0 otherwise
@@ -248,7 +248,7 @@ The specular_btdf should look very familiar, this is essentially the specular_br
 
 To factor the `specular_btdf` into our material, we will need to mix the resulting value with the `diffuse_brdf`.
 
-```
+```GLSL
     float transmissionFactor = pbrInputs.transmissionFactor;
     transmissionFactor *= texture(u_TransmissionSampler, texCoords).r;
     vec3 f_transmission = specular_btdf(alphaRoughness, n, l, v, pbrInputs.ior) * baseColor.rgb;
@@ -258,7 +258,7 @@ To factor the `specular_btdf` into our material, we will need to mix the resulti
 
 No surprises here. In my implementation, I will bind a 1x1 white texture to the u_TransmissionSampler descriptor set if there is no transmission texture available. This is merely to reduce the number of shader permutations required. For transmission surfaces, we also require a slightly modified `fresnel_mix` to use the modified half-vector.
 
-```
+```GLSL
     vec3 fresnel_mix(float ior, vec3 base, vec3 layer, vec3 n, vec3 l, vec3 v)
     {
         l = l + 2.0 * n * (dot(-l, n)); // mirror light reflection vector on surface
@@ -278,7 +278,7 @@ At a minimum, rasterizers like this implementation must "reveal" the opaque scen
 
 Below is how I sample into the offscreen scene of opaque objects. This scene includes the Skybox and all solid objects, rendered to a 1024x1024 UNORM texture. Emphasis added to the UNORM, as this buffer isn't here to represent colors, but linear light values from this scene. As this scene is a mipmapped texture, each level in the mipmap tree contains a lower resolution and blurrier scene from the level above. As roughness increases, we want to sample into these lower levels. Note that this LOD selection is also influenced by the IOR of the material to retain two key properties; (1) as IOR approaches 1.0 sensitivity to roughness matters less (1.0 is air and we will always sample miplevel 0), and (2) a default IOR of 1.5 represents our identity value for IOR influence (no skew).
 
-```
+```GLSL
 vec3 ibl_transmission(float roughness, float ior, vec3 absorptionColor, vec3 v, vec3 n)
 {
     const float maxLod = 6; // scene is now always 1024x1024 with mipLevels = 10
@@ -296,7 +296,7 @@ vec3 ibl_transmission(float roughness, float ior, vec3 absorptionColor, vec3 v, 
 
 I understand that calling this function "ibl" is a stretch, as it has nothing to do with our IBL cubemap. We are sampling an image for lighting though, so it stays. You'll see below that it just fits in nicely with our other IBL sampling. Note that as covered above for the punctual lighting case, iblTransmission is not a component of the metal_brdf.
 
-```
+```GLSL
     vec3 iblTransmission = transmissionFactor * ibl_transmission(
         perceptualRoughness, 
         pbrInputs.ior, 
