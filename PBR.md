@@ -1,20 +1,17 @@
 # Notes on Writing glTF PBR
 
-These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. Sample code is provided below in GLSL.
+These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. This is intentionally implementation heavy and closer to a code review/walkthrough; I try to emphasize any important observations along the way. Sample code is provided below in GLSL.
 
 TODO:
  * Summary of creating an offscreen scene for transmission materials
- * Extending thin-walled transmission to handle refractive volumes
  * Include diagrams from Appendix B and Extensions
  * Include Renderings of the materials.
 
 ## Core glTF 2.0 PBR (Metallic-Roughness)
 
-The key starting point for this glTF PBR rewrite was to begin in Appendix B of the [glTF specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation), implementing core glTF 2.0 closest to the intent of the Khronos PBR working group. Understand that this particular implementation aims to convey spirit of the material rather than promoting optimizations and PBR witchraft. Perfect for my use.
+The key starting point for this glTF PBR rewrite was to begin in Appendix B of the [glTF specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#appendix-b-brdf-implementation), implementing core glTF 2.0 closest to the intent of the Khronos PBR working group. Understand that this particular implementation aims to convey spirit of the material rather than promoting optimizations and PBR/optimization witchraft. Perfect for my use.
 
-Rather than recite Appendix B back here, I'll simply fill in the blanks. Here are the nuts and bolts of my approach, any bugs are my own. We'll start with how punctual lighting (spot, point, direction lights) is handled on the PBR material.
-
-I'll start at a high level implementation modeled after Appendix B, and drill down into each of these building blocks individually. First we'll need to calculate the specular and diffuse surface reflections, which will then be the core inputs into dielectric and metallic brdfs. The final color is selected based on the metallic value defined on the material.
+Rather than recite Appendix B back here, I'll simply fill in the blanks. Below I document a summary of the nuts and bolts of my approach, any bugs are my own. I'll start at a high level overview of how punctual lighting (spot, point, direction lights) are modeled after Appendix B, and drill down into each of these building blocks individually. First we need to calculate the specular and diffuse surface reflections, which will then be the core inputs into dielectric and metallic brdfs. The final color is selected based on the metallic value defined on the material.
 
 ```GLSL
     float specularBrdf = specular_brdf(alphaRoughness, NdotL, NdotV, NdotH, LdotH, VdotH);
@@ -311,3 +308,91 @@ I understand that calling this function "ibl" is a stretch, as it has nothing to
 ```
 
 ## Extending Transmission to include Refractive Volumes
+
+Extending thin-walled transmission to support refractive volumes (thick transmission) doesn't require much more work. The [KHR_materials_volume](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume) extension allows models to define properties that are required to achieve this effect, properties that control light absorption (`attenuationColor` and `attenuationDistance`) and a rasterization helper property for defining thickness (`thicknessFactor` and `thicknessTexture`). These properties are used in the `specular_btdf`, `fresnel_mix`, and `ibl_transmission` functions.
+
+```GLSL
+float specular_btdf(float alphaRoughness, vec3 n, vec3 l, vec3 v, float ior)
+{
+    float ior_i = 1.0; // assumes air on the incident ior (outside volume)
+    float ior_o = 1.0; // ior of volume. by default a value of 1.0 disables refraction.
+    vec3 Ht = vec3(0.0);
+
+    // Volume
+    if (UseVolume)
+    {
+        ior_i = 1.0; // assumes air on the incident ior (outside volume)
+        ior_o = ior; // ior of the volume
+        Ht = -normalize(ior_i * v + ior_o * l);
+    }
+    else // thin walled
+    {
+        l = l + 2.0 * n * (dot(-l, n)); // mirror light reflection vector on surface
+        Ht = normalize(v + l);
+    }
+
+    float D_heaviside = heaviside(clampdot(n,Ht));
+    float G_heaviside = heaviside(clampdot(Ht,v) / clampdot2(n,v));
+    
+    float Dt = D_heaviside * microfacetDistribution(alphaRoughness, clampdot(n,Ht));
+    float Gt = G_heaviside * geometricOcclusion(alphaRoughness, clampdot(n,l), clampdot(n,v), clampdot(l,Ht), clampdot(v,Ht));
+
+    float Vt = Gt / (4.0 * abs(dot(n,l)) * abs(dot(n,v))); 
+
+    // Volume
+    if (UseVolume)
+    {
+        float volumeNormalizeTerm = (abs(dot(Ht, l)) * abs(dot(Ht, v))) / (abs(dot(n, l)) * abs(dot(n, v)));
+        float denominator = ior_i * clampdot2(Ht, v) + ior_o * clampdot2(Ht, l);
+        Vt = volumeNormalizeTerm * (ior_o * ior_o * Gt) / (denominator * denominator);
+    }
+    return clampdot(n, l) * Vt * Dt;
+}
+```
+
+All additions here are a reflection of the implementation notes defined in the KHR_materials_volume [implementation notes](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume#implementation). An implementation note of my own is that the `UseVolume` boolean is a specialization constant for Vulkan SPIRV. The use of specialization constants over #defines was a recent transformation of my shaders to reduce the number of possible permutations of these shaders, allowing for heavy shader reuse and precompiling. Before ultimately landing on specialization constants, I had an early implementation that used the `thicknessFactor != 0.0` to act as a guard for the volume control paths. While this was preferred over `#define HAS_VOLUME`, specialization constants are better because the graphics pipeline is able to perform additional optimizations on the shader knowing that this shader will never reach these scopes. The `fresnel_mix` defined above is essentially the same as presented above in the transmission section, but includes this same alternate construction of the HalfVector for transmission (`Ht`).
+
+```GLSL
+vec3 getTransmittedAbsorption(float thickness)
+{
+    vec3 sigma_t = -log(pbrInputs.attenuationColor.rgb) / pbrInputs.attenuationColor.w;
+    return exp(-sigma_t * thickness);
+}
+
+vec2 getRefractionUV(vec3 v, vec3 n, vec3 position, float thickness, float ior)
+{
+    vec3 refractVec = normalize(refract(-v, n, 1.0 / ior));
+    vec3 worldExit = position + normalize(refractVec) * thickness;
+    vec4 ndc = scene.projectionMatrix * scene.viewMatrix * vec4(worldExit, 1.0);
+    vec2 uv = (ndc.xy / ndc.w + vec2(1.0)) * 0.5;
+    return uv;
+}
+
+vec3 ibl_transmission(float roughness, float ior, vec3 absorptionColor, vec3 v, vec3 n)
+{
+    const float maxLod = 6; // scene is now always 1024x1024 with mipLevels = 10
+    const float roughnessOneLOD = maxLod - 1.0;
+    // maps 1.0 ior to LOD 0, and 1.5 ior (default) to put IOR influence at 1.0
+    const float iorLODInfluence = (ior - 1.0) * 2.0;
+    float lod = iorLODInfluence * roughnessOneLOD * roughness * (2.0 - roughness);
+    vec2 uv = gl_FragCoord.xy / scene.viewport.zw;
+
+    if (USE_VOLUME)
+    {
+        float thicknessFactor = pbrInputs.thicknessFactor;
+        thicknessFactor *= texture(u_ThicknessTexture, texCoords).g;
+        absorptionColor *= getTransmittedAbsorption(thicknessFactor);
+        uv = getRefractionUV(v, n, v_Position, thicknessFactor, ior);
+    }
+
+    vec3 transmittanceColor = textureLod(u_TransmissionScene, uv, lod).rgb;
+ 
+    transmittanceColor = transmittanceColor * absorptionColor;
+    return transmittanceColor;
+}
+```
+
+The `ibl_transmission` only requires an update that modifies our `uv` that we use to determine where in the background scene we will sample using a refracted ray, and an extra modulation of color to represent the absorption of light. The attenuationColor models the light that survives the attenuation through the material at the attenuation distance. For simplicity, I compute the UV immediately at the point where the ray exits the volume. There are more sophisticated approaches to this if the current approximation is a bit too cheap. Morgan Mcquire's paper on [Screen Space Ray Tracing](http://casual-effects.blogspot.com/2014/08/screen-space-ray-tracing.html) is still on my list for exploration.
+
+## Wrap up
+There's more to come for this document, including my implementation notes for upcoming extensions `KHR_materials_diffuse_transmission` and `KHR_materials_sss` (subsurface scattering).
