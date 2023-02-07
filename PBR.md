@@ -1,11 +1,10 @@
 # Notes on Writing glTF PBR
 
-These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. This is intentionally implementation heavy and closer to a code review/walkthrough; I try to emphasize any important observations along the way. Sample code is provided below in GLSL.
+These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. As this is a companion guide to Appendix B and a few extensions, this is intentionally implementation heavy and closer to a code review/walkthrough. I try to emphasize any important observations along the way. Sample code is provided below in GLSL.
 
 TODO:
- * Summary of creating an offscreen scene for transmission materials
  * Include diagrams from Appendix B and Extensions
- * Include Renderings of the materials.
+ * Include renderings of the materials.
 
 ## Core glTF 2.0 PBR (Metallic-Roughness)
 
@@ -111,9 +110,9 @@ vec3 fresnel_mix(float ior, vec3 base, vec3 layer, float VdotH)
 ```
 
 ## Adding Image-Based Lighting
-The technique for Image-Based Lighting (IBL) is largely based off of the [SIGGRAPH 2013 course notes](https://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf) by Brian Karis at Epic Games. An approachable supplemental overview can also be found at [learnopengl.com](https://learnopengl.com/PBR/IBL/Diffuse-irradiance). There are several different alternative approaches to IBL available depending on your target hardware and runtime criteria. Emmett Lalish from Google developed a novel approach to IBL in three.js that is fast enough to be computed on the fly at runtime. Cesium.js also has an implementation that encodes the environment maps into an octahedron, which can be unrolled into a 2D texture (this technique is known as oct-encoding). Again, I just stuck with what I had originally written years ago and is well documented online. The approach I used is energy conserving thanks to the excellent summary presented by [Bruno Opsenica](https://bruop.github.io/ibl/#single_scattering_results).
+The technique for Image-Based Lighting (IBL) is largely based off of the [SIGGRAPH 2013 course notes](https://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf) by Brian Karis at Epic Games. An approachable supplemental overview can also be found at [learnopengl.com](https://learnopengl.com/PBR/IBL/Diffuse-irradiance). There are several different alternative approaches to IBL available depending on your target hardware and runtime criteria. Emmett Lalish from Google developed a novel approach to IBL in three.js that is fast enough to be computed on the fly at runtime. Cesium.js also has (or experimented with) an implementation that encodes the environment maps into an octahedron, which can be unrolled into a 2D texture (this technique is known as oct-encoding). I just stuck with what I had originally written years ago and is well documented online. The approach I use is energy conserving thanks to the excellent summary presented by [Bruno Opsenica](https://bruop.github.io/ibl/#single_scattering_results).
 
-First I'll present how surface light contributes are calculated for both the diffuse BRDF and the specular BRDF.
+First I'll present how surface light contributions are calculated for both the irradiance and the specular BRDF.
 
 ```GLSL
 // IBL Irradiance represents the average lighting from any direction.
@@ -207,21 +206,37 @@ As you can see, the approach I took was to combine irradiance (average light fro
 
 ## Extending Metallic-Roughness for Transmission
 
-For modeling glass like surfaces, we need to extend the core metallic roughness model to include transmission. The [KHR_materials_transmission](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_transmission) extension allows for light to transmit through the surface. That might sound like alpha blending to some, but these two concepts are very different. In short, alpha blending is used to model the precense or absence of the material (think screen door). 50% alpha implies that only 50% of the material is actually there in the fragment. If that surface was shiny, you would only render 50% of that shiny surface and lose half of the highlight. For transmission, the entire material is present but we now signal to the renderer that light travels through the surface and we must therefore combine surface highlights, tint, etc on this material with the scene that exists behind this fragment. This is covered in our [Khronos webinar](https://www.khronos.org/events/advanced-pbr-material-parameters-in-gltf) and in the specification.
+For modeling glass like surfaces, we need to extend the core metallic roughness model to include transmission. The [KHR_materials_transmission](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_transmission) extension allows for light to transmit through the surface. That might sound like alpha blending to some, but these two concepts are very different. In short, alpha blending is used to model the precense or absence of the material (think screen door). 50% alpha implies that only 50% of the material occupies the fragment. If that surface was shiny, you would only render 50% of that shiny surface and lose half of the highlight. For transmission, the entire material is present but we now signal to the renderer that light travels through the surface and we must therefore combine surface highlights, tint, etc on this material with the scene that exists behind this fragment. This is covered in our [Khronos webinar](https://www.khronos.org/events/advanced-pbr-material-parameters-in-gltf) and in the specification.
+
+In isolation, the transmission extension models the effect known as "thin-walled" transmission, where the transmissive surface is "infinitely thin" and no value of IOR would result in refraction. This material has its uses, such as glass windows, but it is typically paired with the `KHR_materials_volume` extension covered later.
 
 ### Preparing the offscreen opaque scene for Transmission
 
-TODO. See the second half of our [Khronos webinar](https://www.khronos.org/events/advanced-pbr-material-parameters-in-gltf) for the overview.
+The illusion of revealing a scene behind transmission fragments is achieved through a rasterization technical called Screen Space Refraction (SSR). At it's core, this technique requires that we render the scene to an offscreen texture in one pass without rendering any transmissive materials. You can think of this offscreen texture as representing the background scene that can be viewed through a transmissive material. From a physical standpoint, this texture is a capture of all of the linear light values eminating from our scene, and we will sample this scene when rendering transmissive fragments to gather inputs on how much linear light will be transmitted through the material and tinted by the `baseColorFactor` of the surface. With this understanding, it is important to note that this offscreen texture must use a Linear representation; UNORM and not SRGB.
+
+After the offscreen scene is rendered, the texture must be mipmapped. Miplevels are accessed based on the level of roughness on the transmissive material. Regardless of the aspect ratio of the screen, I will always render to a 1024x1024 sized texture, ensuring that this step is not fill-rate sensitive to screen resolution and that we will always have a known number of mip-levels for this scene.
+
+See the second half of our [Khronos webinar](https://www.khronos.org/events/advanced-pbr-material-parameters-in-gltf) for the overview of how this was implemented in the glTF Sample Viewer.
 
 ### Shader updates for transmission.
 
-We'll start by defining our transmission response with punctual lighting. Transmission extends the core glTF model by inserting a new node, the `specular_btdf` (Bi-directional Transmission Function). At its core, the glTF model will provide a `transmissionFactor` that we will use to blend between the `diffuse_brdf` and the `specular_btdf`.
+Transmission extends the core glTF model by inserting a new node, the `specular_btdf` (Bi-directional Transmission Function); the glTF model will provide a `transmissionFactor` that we will use to blend between the `diffuse_brdf` and the `specular_btdf`. For completeness, I've also listed helper functions for a clamped dot product; the second variation is there to avoid divide-by-zero errors.
 
 ```GLSL
 float heaviside(float v)
 {
     // return 1.0 if v is > 0, 0.0 otherwise
     return clamp(sign(v), 0.0, 1.0);
+}
+
+float clampdot(vec3 a, vec3 b)
+{
+    return clamp(dot(a, b), 0.0, 1.0);
+}
+
+float clampdot2(vec3 a, vec3 b)
+{
+    return clamp(dot(a, b), 0.0001, 1.0);
 }
 
 float specular_btdf(float alphaRoughness, vec3 n, vec3 l, vec3 v, float ior)
@@ -243,7 +258,7 @@ float specular_btdf(float alphaRoughness, vec3 n, vec3 l, vec3 v, float ior)
 
 The specular_btdf should look very familiar, this is essentially the specular_brdf function, but we've modified it to be calculated with the light vector mirrored on the surface, and flipped our hemisphere of acceptable values (via the `heaviside`). The `microfacetDistribution` and `geometricOcclusion` are the same functions defined above. You may be tempted to simplify things and send different inputs into the specular_brdf function, but that unused `float ior` input is foreshadowing for changes that we will make to extend this effect to include refraction. 
 
-To factor the `specular_btdf` into our material, we will need to mix the resulting value with the `diffuse_brdf`.
+To factor the `specular_btdf` into our material, we will need to mix the resulting value with the `diffuse_brdf` based on the transmissionFactor defined on the material.
 
 ```GLSL
     float transmissionFactor = pbrInputs.transmissionFactor;
@@ -251,7 +266,6 @@ To factor the `specular_btdf` into our material, we will need to mix the resulti
     vec3 f_transmission = specular_btdf(alphaRoughness, n, l, v, pbrInputs.ior) * baseColor.rgb;
     f_diffuse = mix(f_diffuse, f_transmission, transmissionFactor);
 ```
-
 
 No surprises here. In my implementation, I will bind a 1x1 white texture to the u_TransmissionSampler descriptor set if there is no transmission texture available. This is merely to reduce the number of shader permutations required. For transmission surfaces, we also require a slightly modified `fresnel_mix` to use the modified half-vector.
 
@@ -278,7 +292,7 @@ Below is how I sample into the offscreen scene of opaque objects. This scene inc
 ```GLSL
 vec3 ibl_transmission(float roughness, float ior, vec3 absorptionColor, vec3 v, vec3 n)
 {
-    const float maxLod = 6; // scene is now always 1024x1024 with mipLevels = 10
+    const float maxLod = 6; // scene is now always 1024x1024 with mipLevels = 10 ... 10 is too low of a mip level so raise the floor to miplevel 6
     const float roughnessOneLOD = maxLod - 1.0;
     // maps 1.0 ior to LOD 0, and 1.5 ior (default) to put IOR influence at 1.0
     const float iorLODInfluence = (ior - 1.0) * 2.0;
@@ -291,7 +305,7 @@ vec3 ibl_transmission(float roughness, float ior, vec3 absorptionColor, vec3 v, 
 }
 ```
 
-I understand that calling this function "ibl" is a stretch, as it has nothing to do with our IBL cubemap. We are sampling an image for lighting though, so it stays. You'll see below that it just fits in nicely with our other IBL sampling. Note that as covered above for the punctual lighting case, iblTransmission is not a component of the metal_brdf.
+I understand that calling this function "ibl" is a stretch, as it has nothing to do with our IBL cubemap. As this transmission scene is storing linear light values from a background scene, referring to this texture as 'ibl' isn't terrible, so it stays. You'll see below that it just fits in nicely with our other IBL sampling. Note that as covered above for the punctual lighting case, iblTransmission is not a component of the metal_brdf.
 
 ```GLSL
     vec3 iblTransmission = transmissionFactor * ibl_transmission(
@@ -309,7 +323,7 @@ I understand that calling this function "ibl" is a stretch, as it has nothing to
 
 ## Extending Transmission to include Refractive Volumes
 
-Extending thin-walled transmission to support refractive volumes (thick transmission) doesn't require much more work. The [KHR_materials_volume](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume) extension allows models to define properties that are required to achieve this effect, properties that control light absorption (`attenuationColor` and `attenuationDistance`) and a rasterization helper property for defining thickness (`thicknessFactor` and `thicknessTexture`). These properties are used in the `specular_btdf`, `fresnel_mix`, and `ibl_transmission` functions.
+Extending thin-walled transmission to support refractive volumes (thick transmission) doesn't require much more work. The [KHR_materials_volume](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume) extension allows models to define properties that are required to achieve this effect, light absorption (`attenuationColor` and `attenuationDistance`) and a rasterization helper property for defining thickness (`thicknessFactor` and `thicknessTexture`). These properties are used in the `specular_btdf`, `fresnel_mix`, and `ibl_transmission` functions.
 
 ```GLSL
 float specular_btdf(float alphaRoughness, vec3 n, vec3 l, vec3 v, float ior)
@@ -350,7 +364,7 @@ float specular_btdf(float alphaRoughness, vec3 n, vec3 l, vec3 v, float ior)
 }
 ```
 
-All additions here are a reflection of the implementation notes defined in the KHR_materials_volume [implementation notes](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume#implementation). An implementation note of my own is that the `UseVolume` boolean is a specialization constant for Vulkan SPIRV. The use of specialization constants over #defines was a recent transformation of my shaders to reduce the number of possible permutations of these shaders, allowing for heavy shader reuse and precompiling. Before ultimately landing on specialization constants, I had an early implementation that used the `thicknessFactor != 0.0` to act as a guard for the volume control paths. While this was preferred over `#define HAS_VOLUME`, specialization constants are better because the graphics pipeline is able to perform additional optimizations on the shader knowing that this shader will never reach these scopes. The `fresnel_mix` defined above is essentially the same as presented above in the transmission section, but includes this same alternate construction of the HalfVector for transmission (`Ht`).
+All additions here are a reflection of the [implementation notes](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume#implementation) defined in the KHR_materials_volume. An implementation note of my own is that the `UseVolume` boolean is a specialization constant for Vulkan SPIRV. The use of specialization constants over #defines was a recent transformation of my shaders to reduce the number of possible permutations of these shaders, allowing for heavy shader reuse and precompiling. Before ultimately landing on specialization constants, I had an early implementation that used the `thicknessFactor != 0.0` to act as a guard for the volume control paths. While the use of a uniform was preferred over `#define HAS_VOLUME`, specialization constants are better because the graphics pipeline is able to perform additional optimizations on the shader knowing that this shader will never reach these scopes. The `fresnel_mix` defined above is essentially the same as presented above in the transmission section, but includes this same alternate construction of the HalfVector for transmission (`Ht`).
 
 ```GLSL
 vec3 getTransmittedAbsorption(float thickness)
