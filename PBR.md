@@ -55,9 +55,9 @@ float specular_brdf(float alphaRoughness, float NdotL, float NdotV, float NdotH,
 The geometricOcclusion (G) and microfacetDistribution (D) functions are defined in the SIGGRAPH 2013 course notes on PBR by Epic Games.
 
 ```GLSL
-// The following equation(s) model the distribution of microfacet normals across the area being drawn (aka D())
+// The following equation models the distribution of microfacet normals across the area being drawn (aka D())
 // Implementation from "Average Irregularity Representation of a Roughened Surface for Ray Reflection" by T. S. Trowbridge, and K. P. Reitz
-// Follows the distribution function recommended in the SIGGRAPH 2013 course notes from EPIC Games [1], Equation 3.
+// Follows the distribution function recommended in the SIGGRAPH 2013 course notes from EPIC Games, Equation 3.
 float microfacetDistribution(float alphaRoughness, float NdotH)
 {
     float alphaRoughnessSq = alphaRoughness * alphaRoughness;
@@ -69,8 +69,7 @@ float microfacetDistribution(float alphaRoughness, float NdotH)
 
 // This calculates the specular geometric attenuation (aka G())
 // where rougher material will reflect less light back to the viewer.
-// This implementation is based on [1] Equation 4, and we adopt their modifications to
-// alphaRoughness as input as originally proposed in [2].
+// This implementation is based on SIGGRAPH 2013 course notes from EPIC Games Equation 4
 // Note that G has been confused with Vis.  Sample Viewer uses Vis = (G / (4 * NdotL * NdotV))
 // If this ever gets switched to Vis, be sure to drop the 4 * NdotL * NdotV normalization term
 float geometricOcclusion(float alphaRoughness, float NdotL, float NdotV, float LdotH, float VdotH)
@@ -86,7 +85,9 @@ float geometricOcclusion(float alphaRoughness, float NdotL, float NdotV, float L
 }
 ```
 
-Finally, here are my implementations of `conductor_fresnel` and `fresnel_mix`:
+Use of the heaviside function is here to stay true to the implementation defined in AppendixB. It is also common to see this function left out, as many guard against all of these calculations much early by testing the value of `NdotV` and `NdotL`. There is no need to evaluate the surface BRDF if the viewer is on the backside of the surface, which can be satisified by adding an `if (NdotV > 0.0)` guard around our brdf calculations above. The same is true for lighting, lights on the opposite side of the surface can be tested and thrown out by adding a test for `if (NdotL > 0.0)`. 
+
+For completion, I'll wrap up with my implementations of `conductor_fresnel` and `fresnel_mix`:
 
 ```GLSL
 vec3 conductor_fresnel(vec3 f0, vec3 bsdf, float VdotH)
