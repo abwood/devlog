@@ -85,7 +85,7 @@ float geometricOcclusion(float alphaRoughness, float NdotL, float NdotV, float L
 }
 ```
 
-Use of the heaviside function is here to stay true to the implementation defined in AppendixB. It is also common to see this function left out, as many guard against all of these calculations much early by testing the value of `NdotV` and `NdotL`. There is no need to evaluate the surface BRDF if the viewer is on the backside of the surface, which can be satisified by adding an `if (NdotV > 0.0)` guard around our brdf calculations above. The same is true for lighting, lights on the opposite side of the surface can be tested and thrown out by adding a test for `if (NdotL > 0.0)`. 
+Use of the heaviside function is here to stay true to the implementation defined in AppendixB. It is also common to see this function left out, as many other implementations guard against all of these calculations much earlier by testing against `NdotV` and `NdotL`. There is no need to evaluate the surface BRDF if the viewer is on the backside of the surface, which can be satisified by adding an `if (NdotV > 0.0)` guard around our brdf calculations above. The same is true for lighting; lights on the opposite side of the surface can be tested and thrown out by adding a test for `if (NdotL > 0.0)`. This is true if our material is only concerned about surface reflections, but below we will add support for thin-walled transmissive surfaces, which can be evaluated from both sides of the surface.
 
 For completion, I'll wrap up with my implementations of `conductor_fresnel` and `fresnel_mix`:
 
