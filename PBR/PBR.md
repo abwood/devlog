@@ -96,7 +96,7 @@ For completion, I'll wrap up with my implementations of `conductor_fresnel` and 
 vec3 conductor_fresnel(vec3 f0, vec3 bsdf, float VdotH)
 {
     vec3 f90 = vec3(1.0);
-    float invVoH = (clamp(1.0 - VdotH, 0.0, 1.0)); // 1.0 - abs(VdotH);
+    float invVoH = clamp(1.0 - VdotH, 0.0, 1.0);
     float pow5 = invVoH * invVoH * invVoH * invVoH * invVoH;
     return bsdf * (f0 + (f90 - f0) * pow5);
 }
@@ -331,7 +331,9 @@ I understand that calling this function "ibl" is a stretch, as it has nothing to
 
 ## Extending Transmission to include Refractive Volumes
 
-Extending thin-walled transmission to support refractive volumes (thick transmission) doesn't require much more work. The [KHR_materials_volume](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume) extension allows models to define properties that are required to achieve this effect, light absorption (`attenuationColor` and `attenuationDistance`) and a rasterization helper property for defining thickness (`thicknessFactor` and `thicknessTexture`). These properties are used in the `specular_btdf`, `fresnel_mix`, and `ibl_transmission` functions.
+Extending thin-walled transmission to support refractive volumes (thick transmission) doesn't require much more work. The [KHR_materials_volume](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume) extension allows models to define properties that are required to achieve this effect, light absorption (`attenuationColor` and `attenuationDistance`) and a rasterization helper property for defining thickness (`thicknessFactor` and `thicknessTexture`). These properties are used in the `specular_btdf`, `fresnel_mix`, and `ibl_transmission` functions. 
+
+I almost forgot to mention that this extension requires the presence of [KHR_materials_ior](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_ior), which is a simple extension that delivers us a configurable index of refraction property. It exists as a separate extension because IOR also effects surface reflectivity, with higher values of IOR producing a greater specular response. It is a simple scalar value, and will carry through into the shader as a uniform value for the material.
 
 ```GLSL
 float specular_btdf(float alphaRoughness, vec3 n, vec3 l, vec3 v, float ior)
