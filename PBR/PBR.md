@@ -3,7 +3,6 @@
 These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. As this is a companion guide to Appendix B and a few extensions, this is intentionally implementation heavy and closer to a code review/walkthrough. I try to emphasize any important observations along the way. Sample code is provided below in GLSL.
 
 TODO:
- * Include diagrams from Appendix B and Extensions
  * Include renderings of the materials.
 
 ## Core glTF 2.0 PBR (Metallic-Roughness)
@@ -14,7 +13,7 @@ Rather than recite Appendix B back here, I'll simply fill in the blanks. Below I
 
 The code below follows the BRDF diagram shown in Appendix B:
 
-[Core BRDF from Appendix B](core.brdf.svg)
+![Core BRDF from Appendix B](./core.brdf.svg)
 
 ```GLSL
     float specularBrdf = specular_brdf(alphaRoughness, NdotL, NdotV, NdotH, LdotH, VdotH);
@@ -227,7 +226,7 @@ See the second half of our [Khronos webinar](https://www.khronos.org/events/adva
 
 Transmission extends the core glTF model by inserting a new node, the `specular_btdf` (Bi-directional Transmission Function); the glTF model will provide a `transmissionFactor` that we will use to blend between the `diffuse_brdf` and the `specular_btdf`. The diagram from above is extended to add the `specular_btdf` (diagram pulled from the extension).
 
-[BTDF and BRDF](transmission.diagram.png)
+![BTDF and BRDF](./transmission.diagram.png)
 
 For completeness, I've also listed helper functions for a clamped dot product; the second variation is there to avoid divide-by-zero errors.
 
