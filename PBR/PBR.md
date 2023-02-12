@@ -12,6 +12,10 @@ The key starting point for this glTF PBR rewrite was to begin in Appendix B of t
 
 Rather than recite Appendix B back here, I'll simply fill in the blanks. Below I document a summary of the nuts and bolts of my approach, any bugs are my own. I'll start at a high level overview of how punctual lighting (spot, point, direction lights) are modeled after Appendix B, and drill down into each of these building blocks individually. First we need to calculate the specular and diffuse surface reflections, which will then be the core inputs into dielectric and metallic brdfs. The final color is selected based on the metallic value defined on the material.
 
+The code below follows the BRDF diagram shown in Appendix B:
+
+[Core BRDF from Appendix B](core.brdf.svg)
+
 ```GLSL
     float specularBrdf = specular_brdf(alphaRoughness, NdotL, NdotV, NdotH, LdotH, VdotH);
     vec3 f_specular = NdotL * vec3(specularBrdf);
@@ -221,7 +225,11 @@ See the second half of our [Khronos webinar](https://www.khronos.org/events/adva
 
 ### Shader updates for transmission.
 
-Transmission extends the core glTF model by inserting a new node, the `specular_btdf` (Bi-directional Transmission Function); the glTF model will provide a `transmissionFactor` that we will use to blend between the `diffuse_brdf` and the `specular_btdf`. For completeness, I've also listed helper functions for a clamped dot product; the second variation is there to avoid divide-by-zero errors.
+Transmission extends the core glTF model by inserting a new node, the `specular_btdf` (Bi-directional Transmission Function); the glTF model will provide a `transmissionFactor` that we will use to blend between the `diffuse_brdf` and the `specular_btdf`. The diagram from above is extended to add the `specular_btdf` (diagram pulled from the extension).
+
+[BTDF and BRDF](transmission.diagram.png)
+
+For completeness, I've also listed helper functions for a clamped dot product; the second variation is there to avoid divide-by-zero errors.
 
 ```GLSL
 float heaviside(float v)
