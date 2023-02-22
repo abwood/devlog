@@ -1,9 +1,10 @@
 # Notes on Writing glTF PBR
 
-These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. As this is a companion guide to Appendix B and a few extensions, this is intentionally implementation heavy and closer to a code review/walkthrough. I try to emphasize any important observations along the way. Sample code is provided below in GLSL.
+These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. As these notes here are a companion guide to Appendix B and a few extensions, this is intentionally implementation heavy and closer to a code review/walkthrough. I try to emphasize any important observations along the way. Sample code is provided below in GLSL.
 
-TODO:
- * Include renderings of the materials.
+
+![RB73-forpinik](rb73.png)
+*RB-73 Model created by @forpinik ([Sketchfab](https://skfb.ly/6StXO)*
 
 ## Core glTF 2.0 PBR (Metallic-Roughness)
 
@@ -123,9 +124,7 @@ First I'll present how surface light contributions are calculated for both the i
 vec3 ibl_irradiance(vec3 diffuseColor, vec3 n, float roughness, float NdotV, vec3 F0, vec2 brdfLUT)
 {
     n =  mat3(pbrInputs.environmentMapTransform) * n;
-    // You're reading this right, the prefiltered diffuse IBL component 
-    // is jammed into this miplevel intentionally. Save on samplers.
-    vec3 diffuseLight = textureLod(u_SpecularEnvSampler, n, c_MaxLod).rgb;
+    vec3 diffuseLight = texture(u_IrradianceEnvSampler, n).rgb;
 
     // The following models energy conservation for IBL
     // see https://bruop.github.io/ibl/
@@ -208,6 +207,10 @@ Below I show how these terms are combined with the results of punctual lighting 
 
 As you can see, the approach I took was to combine irradiance (average light from all directions) and specular IBL contributions with the dielectric and metallic BRDFs at the end.
 
+To evaluate these core properties, you'll want to grab some sample models from the [glTF-Sample-Models](https://github.com/KhronosGroup/glTF-Sample-Models) repository up on github. Here you'll find a curated set of models that are meant to showcase a particular effect possible with glTF materials, as well as a collection of conformance models. The conformance models are fantastic for engine development, as they are designed to highlight common problems and considerations when implementing these effects. Below is a rendering of the [MetalRoughSpheres Test](https://github.com/KhronosGroup/glTF-Sample-Models/tree/master/2.0/MetalRoughSpheres).
+
+![MetalRoughSpheres](mrspheres.png)
+
 ## Extending Metallic-Roughness for Transmission
 
 For modeling glass like surfaces, we need to extend the core metallic roughness model to include transmission. The [KHR_materials_transmission](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_transmission) extension allows for light to transmit through the surface. That might sound like alpha blending to some, but these two concepts are very different. In short, alpha blending is used to model the precense or absence of the material (think screen door). 50% alpha implies that only 50% of the material occupies the fragment. If that surface was shiny, you would only render 50% of that shiny surface and lose half of the highlight. For transmission, the entire material is present but we now signal to the renderer that light travels through the surface and we must therefore combine surface highlights, tint, etc on this material with the scene that exists behind this fragment. This is covered in our [Khronos webinar](https://www.khronos.org/events/advanced-pbr-material-parameters-in-gltf) and in the specification.
@@ -215,6 +218,8 @@ For modeling glass like surfaces, we need to extend the core metallic roughness 
 In isolation, the transmission extension models the effect known as "thin-walled" transmission, where the transmissive surface is "infinitely thin" and no value of IOR would result in refraction. This material has its uses, such as glass windows, but it is typically paired with the `KHR_materials_volume` extension covered later.
 
 ### Preparing the offscreen opaque scene for Transmission
+
+![Bunny Absorption](bunnyabsorption.png)
 
 The illusion of revealing a scene behind transmission fragments is achieved through a rasterization technical called Screen Space Refraction (SSR). At it's core, this technique requires that we render the scene to an offscreen texture in one pass without rendering any transmissive materials. You can think of this offscreen texture as representing the background scene that can be viewed through a transmissive material. From a physical standpoint, this texture is a capture of all of the linear light values eminating from our scene, and we will sample this scene when rendering transmissive fragments to gather inputs on how much linear light will be transmitted through the material and tinted by the `baseColorFactor` of the surface. With this understanding, it is important to note that this offscreen texture must use a Linear representation; UNORM and not SRGB.
 
@@ -329,9 +334,15 @@ I understand that calling this function "ibl" is a stretch, as it has nothing to
     vec3 color = mix(dielectric_brdf, metal_brdf, metallic);
 ```
 
+Here is a very simple scene, where I've hand edited a glTF model of a yellow sphere to define a transmission factor of 1.0. This scene includes a red ball in the background, showing that an opaque scene (all non-transmission objects) are visibile through this transmission material.
+
+![transmission_ball](transmission_sphere.png)
+
 ## Extending Transmission to include Refractive Volumes
 
-Extending thin-walled transmission to support refractive volumes (thick transmission) doesn't require much more work. The [KHR_materials_volume](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume) extension allows models to define properties that are required to achieve this effect, light absorption (`attenuationColor` and `attenuationDistance`) and a rasterization helper property for defining thickness (`thicknessFactor` and `thicknessTexture`). These properties are used in the `specular_btdf`, `fresnel_mix`, and `ibl_transmission` functions. 
+Extending thin-walled transmission to support refractive volumes (thick transmission) doesn't require much more work. The [KHR_materials_volume](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_volume) extension allows models to define properties that are required to achieve this effect, light absorption (`attenuationColor` and `attenuationDistance`) and a rasterization helper property for defining thickness (`thicknessFactor` and `thicknessTexture`). These properties are used in the `specular_btdf`, `fresnel_mix`, and `ibl_transmission` functions. The nuances of absorption are covered well in the [AttenuationTest](https://github.com/KhronosGroup/glTF-Sample-Models/tree/master/2.0/AttenuationTest) sample model.
+
+![attenuationtest](attenuationtest.png)
 
 I almost forgot to mention that this extension requires the presence of [KHR_materials_ior](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_ior), which is a simple extension that delivers us a configurable index of refraction property. It exists as a separate extension because IOR also effects surface reflectivity, with higher values of IOR producing a greater specular response. It is a simple scalar value, and will carry through into the shader as a uniform value for the material.
 
@@ -401,7 +412,7 @@ vec3 ibl_transmission(float roughness, float ior, vec3 absorptionColor, vec3 v, 
     float lod = iorLODInfluence * roughnessOneLOD * roughness * (2.0 - roughness);
     vec2 uv = gl_FragCoord.xy / scene.viewport.zw;
 
-    if (USE_VOLUME)
+    if (UseVolume)
     {
         float thicknessFactor = pbrInputs.thicknessFactor;
         thicknessFactor *= texture(u_ThicknessTexture, texCoords).g;
