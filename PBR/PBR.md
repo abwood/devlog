@@ -2,9 +2,9 @@
 
 These notes are my own personal summary on a rewrite of my PBR shaders to be a bit more maintainable, readable, and accurate. My approach was to follow the definition of PBR as defined in Appendix B of the glTF 2.0 specification as closely as possible. As these notes here are a companion guide to Appendix B and a few extensions, this is intentionally implementation heavy and closer to a code review/walkthrough. I try to emphasize any important observations along the way. Sample code is provided below in GLSL.
 
+<img src="rb73.png" width="50%" height="50%" />
 
-![RB73-forpinik](rb73.png)
-*RB-73 Model created by @forpinik ([Sketchfab](https://skfb.ly/6StXO)*
+*RB-73 Model created by @forpinik ([Sketchfab](https://skfb.ly/6StXO))*
 
 ## Core glTF 2.0 PBR (Metallic-Roughness)
 
@@ -15,6 +15,8 @@ Rather than recite Appendix B back here, I'll simply fill in the blanks. Below I
 The code below follows the BRDF diagram shown in Appendix B:
 
 ![Core BRDF from Appendix B](./core.brdf.svg)
+
+*Core PBR material diagram, from Appendix B of the glTF 2.0 specification*
 
 ```GLSL
     float specularBrdf = specular_brdf(alphaRoughness, NdotL, NdotV, NdotH, LdotH, VdotH);
@@ -220,6 +222,8 @@ In isolation, the transmission extension models the effect known as "thin-walled
 ### Preparing the offscreen opaque scene for Transmission
 
 ![Bunny Absorption](bunnyabsorption.png)
+
+*Stanford Bunny model, with hand edited material to include absorption and refraction*
 
 The illusion of revealing a scene behind transmission fragments is achieved through a rasterization technical called Screen Space Refraction (SSR). At it's core, this technique requires that we render the scene to an offscreen texture in one pass without rendering any transmissive materials. You can think of this offscreen texture as representing the background scene that can be viewed through a transmissive material. From a physical standpoint, this texture is a capture of all of the linear light values eminating from our scene, and we will sample this scene when rendering transmissive fragments to gather inputs on how much linear light will be transmitted through the material and tinted by the `baseColorFactor` of the surface. With this understanding, it is important to note that this offscreen texture must use a Linear representation; UNORM and not SRGB.
 
