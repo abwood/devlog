@@ -12,11 +12,11 @@ The key starting point for this glTF PBR rewrite was to begin in Appendix B of t
 
 Rather than recite Appendix B back here, I'll simply fill in the blanks. Below I document a summary of the nuts and bolts of my approach, any bugs are my own. I'll start at a high level overview of how punctual lighting (spot, point, direction lights) are modeled after Appendix B, and drill down into each of these building blocks individually. First we need to calculate the specular and diffuse surface reflections, which will then be the core inputs into dielectric and metallic brdfs. The final color is selected based on the metallic value defined on the material.
 
-The code below follows the BRDF diagram shown in Appendix B:
-
 ![Core BRDF from Appendix B](./core.brdf.svg)
 
 *Core PBR material diagram, from Appendix B of the glTF 2.0 specification*
+
+The code below follows the BRDF diagram shown in Appendix B:
 
 ```GLSL
     float specularBrdf = specular_brdf(alphaRoughness, NdotL, NdotV, NdotH, LdotH, VdotH);
@@ -39,7 +39,7 @@ The code below follows the BRDF diagram shown in Appendix B:
     vec3 color = mix(dielectric_brdf, metal_brdf, metallic);
 ```
 
-Note the addition of NdotL factor to f_specular and f_diffuse above, which ensures that these terms are only visible on the surfaces that face the light source. Special care must be taken to ensure that these dot products are clamped to 0.0, or sometimes to a small 0.0001 for cases when the dot product is used in the denominator.
+Note the addition of NdotL factor to f_specular and f_diffuse above, which ensures that these terms are only visible on the surfaces that face the light source. Most of these dot products used in this shader are clamped to 0.0, or sometimes to a small 0.0001 for cases when the dot product is used in the denominator. As we are calculating light response on the surface, `NdotL` is clamped in the 0-1 range.
 
 Diffuse and specular brdfs follow exactly as defined in Appendix B.
 ```GLSL
